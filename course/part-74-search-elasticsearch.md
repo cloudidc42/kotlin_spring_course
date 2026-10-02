@@ -450,4 +450,133 @@ class ElasticsearchReindexJob(
 
 ---
 
+## 🔄 8. Zero-downtime Reindexing ด้วย Aliases
+
+```bash
+# สร้าง index ใหม่
+PUT /products_v2
+{...mapping...}
+
+# Reindex จาก v1 ไป v2
+POST /_reindex
+{
+  "source": {"index": "products_v1"},
+  "dest": {"index": "products_v2"}
+}
+
+# Switch alias
+POST /_aliases
+{
+  "actions": [
+    {"remove": {"index": "products_v1", "alias": "products"}},
+    {"add": {"index": "products_v2", "alias": "products"}}
+  ]
+}
+```
+
+### Kotlin Reindex Service
+
+```kotlin
+@Service
+class ElasticsearchMigrationService(
+    private val elasticsearchClient: ElasticsearchClient
+) {
+
+    fun reindex(sourceIndex: String, targetIndex: String): Long {
+        val response = elasticsearchClient.reindex { r ->
+            r.source { s -> s.index(sourceIndex) }
+                .dest { d -> d.index(targetIndex) }
+                .conflicts(co.elastic.clients.elasticsearch._types.Conflicts.Proceed)
+        }
+        return response.total()
+    }
+
+    fun switchAlias(alias: String, fromIndex: String, toIndex: String) {
+        elasticsearchClient.indices().updateAliases { u ->
+            u.actions(
+                co.elastic.clients.elasticsearch.indices.AliasAction.of { a ->
+                    a.remove { r -> r.index(fromIndex).alias(alias) }
+                },
+                co.elastic.clients.elasticsearch.indices.AliasAction.of { a ->
+                    a.add { ad -> ad.index(toIndex).alias(alias) }
+                }
+            )
+        }
+    }
+}
+```
+
+---
+
+## 🔔 9. Elasticsearch Percolator (Reverse Search)
+
+Percolator ช่วยให้ query เป็น document และ document เป็น input — มีประโยชน์สำหรับ alert systems
+
+```kotlin
+// เก็บ query ที่ผู้ใช้สนใจ
+data class PriceAlert(
+    val userId: String,
+    val maxPrice: Double,
+    val category: String
+)
+
+@Service
+class PriceAlertService(
+    private val elasticsearchClient: ElasticsearchClient
+) {
+
+    fun registerAlert(alert: PriceAlert) {
+        // Index the query as a percolator document
+        elasticsearchClient.index { i ->
+            i.index("price_alerts")
+                .id("alert_${alert.userId}_${alert.category}")
+                .document(mapOf(
+                    "query" to mapOf(
+                        "bool" to mapOf(
+                            "must" to listOf(
+                                mapOf("term" to mapOf("category" to alert.category)),
+                                mapOf("range" to mapOf("price" to mapOf("lte" to alert.maxPrice)))
+                            )
+                        )
+                    ),
+                    "userId" to alert.userId
+                ))
+        }
+    }
+
+    fun findMatchingAlerts(product: ProductDocument): List<String> {
+        // ค้นหา queries ที่ match กับ document
+        val response = elasticsearchClient.search({ s ->
+            s.index("price_alerts")
+                .query { q ->
+                    q.percolate { p ->
+                        p.field("query")
+                            .document(product)
+                    }
+                }
+        }, Map::class.java)
+
+        return response.hits().hits()
+            .mapNotNull { it.source()?.get("userId")?.toString() }
+    }
+}
+```
+
+---
+
+## 📊 10. สรุปตาราง Elasticsearch Use Cases
+
+| Use Case | Query Type | หมายเหตุ |
+|---------|-----------|---------|
+| Product search | `multi_match` + `bool` | Fuzzy + boosting |
+| Autocomplete | `completion` + edge ngram | Prefix search |
+| Faceted search | `terms` agg + filter | Category/brand |
+| Price range | `range` filter | Numeric fields |
+| Similar products | `more_like_this` | Content similarity |
+| Trending items | `terms` agg + date | Recent orders |
+| User alerts | `percolate` | Reverse search |
+| Log analysis | `date_histogram` | Time-series |
+
+---
+
 *Part 74/100+ | Kotlin & Spring Boot Complete Course*

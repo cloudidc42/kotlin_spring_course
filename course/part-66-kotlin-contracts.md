@@ -451,4 +451,129 @@ class ContractTest {
 
 ---
 
+## 🔄 10. Contracts กับ Coroutines
+
+Contracts ยังทำงานกับ suspending functions ได้
+
+```kotlin
+import kotlin.contracts.*
+
+@OptIn(ExperimentalContracts::class)
+suspend inline fun <T, R> T.runSuspend(crossinline block: suspend (T) -> R): R {
+    contract {
+        callsInPlace(block, InvocationKind.EXACTLY_ONCE)
+    }
+    return block(this)
+}
+
+// ใช้งาน
+suspend fun processUser(userId: Long) {
+    val result: String
+    userId.runSuspend {
+        result = fetchUserName(it) // compiler รู้ว่า result จะถูก initialize
+    }
+    println(result)
+}
+```
+
+---
+
+## 🏭 11. Contracts ใน Production Code
+
+```kotlin
+import kotlin.contracts.*
+import org.springframework.stereotype.Component
+
+@Component
+class ValidationUtils {
+
+    @OptIn(ExperimentalContracts::class)
+    fun requireEmail(email: String?): String {
+        contract {
+            returnsNotNull() implies (email != null)
+        }
+        return email?.takeIf { it.contains("@") && it.contains(".") }
+            ?: throw IllegalArgumentException("Invalid email: $email")
+    }
+
+    @OptIn(ExperimentalContracts::class)
+    fun requirePositive(value: Int, name: String): Boolean {
+        contract {
+            returns(true) implies (value > 0)
+        }
+        if (value <= 0) throw IllegalArgumentException("$name must be positive, got $value")
+        return true
+    }
+
+    @OptIn(ExperimentalContracts::class)
+    fun requireNonEmpty(list: List<*>?, name: String): Boolean {
+        contract {
+            returns(true) implies (list != null)
+        }
+        if (list.isNullOrEmpty()) throw IllegalArgumentException("$name must not be empty")
+        return true
+    }
+}
+
+// ใช้งานใน Service
+@Service
+class OrderValidator(private val validationUtils: ValidationUtils) {
+
+    fun validate(order: OrderRequest): ValidatedOrder {
+        val email = validationUtils.requireEmail(order.email)
+        // compiler รู้ว่า email ไม่ใช่ null
+
+        if (validationUtils.requireNonEmpty(order.items, "items")) {
+            // compiler รู้ว่า items ไม่ใช่ null
+            return ValidatedOrder(email = email, items = order.items)
+        }
+
+        throw IllegalStateException("Unreachable")
+    }
+}
+```
+
+---
+
+## 📚 12. สรุป Contracts API ทั้งหมด
+
+```kotlin
+import kotlin.contracts.*
+
+// Template สำหรับ contract ต่างๆ
+@OptIn(ExperimentalContracts::class)
+fun contractExamples(
+    condition: Boolean,
+    value: Any?,
+    lambda: () -> Unit
+) {
+    contract {
+        // Effect 1: returns ปกติ implies condition
+        returns() implies condition
+
+        // Effect 2: return true implies non-null
+        returns(true) implies (value != null)
+
+        // Effect 3: return null implies condition false
+        returnsNotNull() implies condition
+
+        // Effect 4: lambda เรียกครั้งเดียว
+        callsInPlace(lambda, InvocationKind.EXACTLY_ONCE)
+    }
+}
+```
+
+### เมื่อไหร่ควรใช้ Contracts
+
+| สถานการณ์ | Contract ที่เหมาะสม |
+|---------|-------------------|
+| Assertion function | `returns() implies condition` |
+| Null check helper | `returns(true) implies (x != null)` |
+| Type narrowing | `returns(true) implies (x is T)` |
+| Builder/DSL | `callsInPlace(EXACTLY_ONCE)` |
+| forEach variant | `callsInPlace(AT_LEAST_ONCE)` |
+| Optional callback | `callsInPlace(AT_MOST_ONCE)` |
+
+---
+
 *Part 66/100+ | Kotlin & Spring Boot Complete Course*

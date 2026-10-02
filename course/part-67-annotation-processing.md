@@ -439,4 +439,154 @@ data class PropertyInfo(
 
 ---
 
+## 🧪 9. Testing Annotation Processors
+
+```kotlin
+// ใช้ compile-testing library
+testImplementation("com.github.tschuchortdev:kotlin-compile-testing-ksp:1.5.0")
+
+class AutoBuilderProcessorTest {
+
+    @Test
+    fun `generates builder for annotated class`() {
+        val result = KotlinCompilation().apply {
+            sources = listOf(
+                SourceFile.kotlin("User.kt", """
+                    @AutoBuilder
+                    data class User(
+                        val name: String,
+                        val email: String
+                    )
+                """)
+            )
+            symbolProcessorProviders = listOf(AutoBuilderProcessorProvider())
+            inheritClassPath = true
+        }.compile()
+
+        assertThat(result.exitCode).isEqualTo(KotlinCompilation.ExitCode.OK)
+        
+        // ตรวจสอบว่า generated file มีเนื้อหาที่ถูกต้อง
+        val generatedFile = result.generatedFiles.find { it.name == "UserBuilder.kt" }
+        assertThat(generatedFile).isNotNull()
+        assertThat(generatedFile!!.readText()).contains("class UserBuilder")
+        assertThat(generatedFile.readText()).contains("fun name(value: String)")
+        assertThat(generatedFile.readText()).contains("fun email(value: String)")
+        assertThat(generatedFile.readText()).contains("fun build(): User")
+    }
+
+    @Test
+    fun `fails compilation when applied to interface`() {
+        val result = KotlinCompilation().apply {
+            sources = listOf(
+                SourceFile.kotlin("MyInterface.kt", """
+                    @AutoBuilder
+                    interface MyInterface
+                """)
+            )
+            symbolProcessorProviders = listOf(AutoBuilderProcessorProvider())
+            inheritClassPath = true
+        }.compile()
+
+        assertThat(result.exitCode).isEqualTo(KotlinCompilation.ExitCode.COMPILATION_ERROR)
+    }
+}
+```
+
+---
+
+## 🔍 10. Real-world KSP: Room-like ORM
+
+สร้าง annotation processor ที่ generate SQL queries อัตโนมัติ
+
+```kotlin
+// annotations
+@Target(AnnotationTarget.CLASS)
+@Retention(AnnotationRetention.SOURCE)
+annotation class Entity(val tableName: String = "")
+
+@Target(AnnotationTarget.PROPERTY)
+@Retention(AnnotationRetention.SOURCE)
+annotation class PrimaryKey
+
+@Target(AnnotationTarget.PROPERTY)
+@Retention(AnnotationRetention.SOURCE)
+annotation class Column(val name: String = "")
+
+// example usage
+@Entity("products")
+data class Product(
+    @PrimaryKey
+    val id: Long = 0,
+    
+    @Column("product_name")
+    val name: String,
+    
+    @Column("unit_price")
+    val price: Double
+)
+```
+
+### Processor generates SQL
+
+```kotlin
+class EntityProcessorVisitor(
+    private val codeGenerator: CodeGenerator
+) : KSVisitorVoid() {
+
+    override fun visitClassDeclaration(classDeclaration: KSClassDeclaration, data: Unit) {
+        val entityAnnotation = classDeclaration.annotations
+            .find { it.shortName.asString() == "Entity" }!!
+        
+        val tableName = entityAnnotation.arguments
+            .find { it.name?.asString() == "tableName" }
+            ?.value?.toString()
+            ?.takeIf { it.isNotBlank() }
+            ?: classDeclaration.simpleName.asString().lowercase()
+
+        val properties = classDeclaration.getAllProperties().toList()
+        val pkProperty = properties.find { prop ->
+            prop.annotations.any { it.shortName.asString() == "PrimaryKey" }
+        }
+
+        val className = classDeclaration.simpleName.asString()
+        val packageName = classDeclaration.packageName.asString()
+
+        val file = codeGenerator.createNewFile(
+            Dependencies(false, classDeclaration.containingFile!!),
+            packageName,
+            "${className}Queries"
+        )
+
+        file.write(generateQueryClass(className, tableName, pkProperty, properties).toByteArray())
+    }
+
+    private fun generateQueryClass(
+        className: String,
+        tableName: String,
+        pk: KSPropertyDeclaration?,
+        properties: List<KSPropertyDeclaration>
+    ): String {
+        val columns = properties.map { prop ->
+            val colAnnotation = prop.annotations.find { it.shortName.asString() == "Column" }
+            val colName = colAnnotation?.arguments?.find { it.name?.asString() == "name" }
+                ?.value?.toString()?.takeIf { it.isNotBlank() }
+                ?: prop.simpleName.asString()
+            prop.simpleName.asString() to colName
+        }
+
+        return """
+            object ${className}Queries {
+                const val TABLE = "$tableName"
+                const val SELECT_ALL = "SELECT * FROM $tableName"
+                const val SELECT_BY_ID = "SELECT * FROM $tableName WHERE ${pk?.simpleName?.asString() ?: "id"} = ?"
+                const val INSERT = "INSERT INTO $tableName (${columns.map { it.second }.joinToString()}) VALUES (${columns.map { "?" }.joinToString()})"
+                const val DELETE_BY_ID = "DELETE FROM $tableName WHERE ${pk?.simpleName?.asString() ?: "id"} = ?"
+            }
+        """.trimIndent()
+    }
+}
+```
+
+---
+
 *Part 67/100+ | Kotlin & Spring Boot Complete Course*

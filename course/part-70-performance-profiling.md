@@ -426,4 +426,141 @@ class ProductController(
 
 ---
 
+## 🔎 10. Spring Boot Actuator สำหรับ Performance
+
+```yaml
+# application.yml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,threaddump,heapdump,httptrace
+  endpoint:
+    heapdump:
+      enabled: true
+    threaddump:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      environment: ${spring.profiles.active:dev}
+```
+
+### Custom Performance Metrics
+
+```kotlin
+@Component
+class PerformanceMetrics(
+    private val meterRegistry: MeterRegistry,
+    private val dataSource: DataSource
+) {
+
+    @Scheduled(fixedRate = 30000) // ทุก 30 วินาที
+    fun recordDbPoolMetrics() {
+        if (dataSource is HikariDataSource) {
+            val pool = dataSource.hikariPoolMXBean ?: return
+            
+            meterRegistry.gauge("db.pool.active") { pool.activeConnections.toDouble() }
+            meterRegistry.gauge("db.pool.idle") { pool.idleConnections.toDouble() }
+            meterRegistry.gauge("db.pool.pending") { pool.threadsAwaitingConnection.toDouble() }
+            meterRegistry.gauge("db.pool.total") { pool.totalConnections.toDouble() }
+        }
+    }
+
+    fun measureOperation(name: String, block: () -> Unit) {
+        val timer = meterRegistry.timer("operation.$name")
+        timer.record(block)
+    }
+}
+```
+
+---
+
+## 📉 11. Memory Leak Prevention Patterns
+
+```kotlin
+// ❌ Static collection ทำให้ memory leak
+object GlobalCache {
+    val cache = HashMap<String, Any>() // ไม่มีการ evict!
+}
+
+// ✅ ใช้ WeakReference สำหรับ objects ที่ไม่ต้องการ retain
+class WeakCache<K, V> {
+    private val cache = java.util.WeakHashMap<K, V>()
+    
+    operator fun get(key: K): V? = cache[key]
+    operator fun set(key: K, value: V) { cache[key] = value }
+}
+
+// ✅ ใช้ Caffeine cache พร้อม expiry
+@Configuration
+class CacheConfig {
+    @Bean
+    fun cacheManager(): CacheManager = CaffeineCacheManager().apply {
+        setCaffeine(Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterAccess(java.time.Duration.ofMinutes(30))
+            .recordStats()
+            .removalListener { key, value, cause ->
+                if (cause.wasEvicted()) {
+                    logger.debug("Cache eviction: key=$key, cause=$cause")
+                }
+            }
+        )
+    }
+}
+```
+
+---
+
+## 🧵 12. Thread Pool Tuning
+
+```kotlin
+@Configuration
+class ThreadPoolConfig {
+
+    @Bean("cpuBoundExecutor")
+    fun cpuBoundExecutor(): Executor = ThreadPoolTaskExecutor().apply {
+        corePoolSize = Runtime.getRuntime().availableProcessors()
+        maxPoolSize = Runtime.getRuntime().availableProcessors() * 2
+        queueCapacity = 100
+        threadNamePrefix = "cpu-"
+        setRejectedExecutionHandler(ThreadPoolExecutor.CallerRunsPolicy())
+        initialize()
+    }
+
+    @Bean("ioBoundExecutor")
+    fun ioBoundExecutor(): Executor = ThreadPoolTaskExecutor().apply {
+        corePoolSize = Runtime.getRuntime().availableProcessors() * 4
+        maxPoolSize = Runtime.getRuntime().availableProcessors() * 10
+        queueCapacity = 500
+        keepAliveSeconds = 60
+        threadNamePrefix = "io-"
+        initialize()
+    }
+}
+
+// ใช้ executor ที่เหมาะสม
+@Service
+class DataProcessingService(
+    @Qualifier("cpuBoundExecutor") private val cpuExecutor: Executor,
+    @Qualifier("ioBoundExecutor") private val ioExecutor: Executor
+) {
+
+    @Async("cpuBoundExecutor")
+    fun processDataCpuIntensive(data: List<Any>): CompletableFuture<List<Any>> {
+        // CPU-intensive operations
+        return CompletableFuture.completedFuture(data.map { it })
+    }
+
+    @Async("ioBoundExecutor")
+    fun fetchFromExternalApi(url: String): CompletableFuture<String> {
+        // I/O operations
+        return CompletableFuture.completedFuture("")
+    }
+}
+```
+
+---
+
 *Part 70/100+ | Kotlin & Spring Boot Complete Course*

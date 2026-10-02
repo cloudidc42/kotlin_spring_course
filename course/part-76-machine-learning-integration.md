@@ -372,4 +372,169 @@ class ModelVersionService(
 
 ---
 
+## 🔁 8. Batch Scoring
+
+บางครั้งเราต้องการ score ข้อมูลจำนวนมากในครั้งเดียว (batch scoring) แทนที่จะ score ทีละรายการ
+
+```kotlin
+@Service
+class BatchScoringService(
+    private val mlServiceClient: MLServiceClient,
+    private val featureEngineeringService: FeatureEngineeringService
+) {
+
+    @Scheduled(cron = "0 0 * * * *") // ทุกชั่วโมง
+    fun scorePendingUsers() {
+        val userIds = userRepository.findActiveUserIds()
+        val batchSize = 100
+
+        userIds.chunked(batchSize).forEach { batch ->
+            try {
+                val features = batch.map { userId ->
+                    runBlocking { featureEngineeringService.buildUserFeatures(userId) }
+                }
+                val scores = mlServiceClient.batchScore(features)
+                scoreRepository.saveAll(scores)
+            } catch (ex: Exception) {
+                logger.error("Batch scoring failed for batch starting with ${batch.first()}", ex)
+            }
+        }
+    }
+
+    fun scoreNewUser(userId: Long) {
+        // Score ใหม่ทันทีเมื่อ user สมัครสมาชิก
+        val features = runBlocking { featureEngineeringService.buildUserFeatures(userId) }
+        val score = mlServiceClient.score(features)
+        scoreRepository.save(UserScore(userId = userId, score = score, scoredAt = java.time.Instant.now()))
+    }
+}
+```
+
+---
+
+## 🧩 9. Feature Store Integration
+
+Feature Store เก็บ feature ที่คำนวณแล้ว เพื่อใช้ซ้ำระหว่าง training และ serving
+
+```kotlin
+@Service
+class FeatureStoreService(
+    private val redisTemplate: RedisTemplate<String, String>,
+    private val objectMapper: ObjectMapper
+) {
+
+    fun getOrComputeFeatures(userId: Long): UserFeatures {
+        val cacheKey = "features:user:$userId"
+        val cached = redisTemplate.opsForValue().get(cacheKey)
+
+        if (cached != null) {
+            return objectMapper.readValue(cached, UserFeatures::class.java)
+        }
+
+        val features = computeFeatures(userId)
+        redisTemplate.opsForValue().set(
+            cacheKey,
+            objectMapper.writeValueAsString(features),
+            java.time.Duration.ofHours(1)
+        )
+        return features
+    }
+
+    fun invalidateFeatures(userId: Long) {
+        redisTemplate.delete("features:user:$userId")
+    }
+
+    private fun computeFeatures(userId: Long): UserFeatures {
+        // คำนวณ features จาก raw data
+        val user = userRepository.findById(userId).orElseThrow()
+        val orders = orderRepository.findRecentByUserId(userId, 50)
+        return UserFeatures(
+            userId = userId.toString(),
+            age = user.age,
+            purchaseHistory = orders.map { it.id.toString() },
+            browsingHistory = emptyList(),
+            totalSpent = orders.sumOf { it.total },
+            lastPurchaseDaysAgo = 0
+        )
+    }
+}
+```
+
+---
+
+## 📈 10. Model Performance Monitoring
+
+```kotlin
+@Service
+class MLModelMonitor(private val meterRegistry: MeterRegistry) {
+
+    fun recordPrediction(
+        modelName: String,
+        modelVersion: String,
+        latencyMs: Long,
+        success: Boolean
+    ) {
+        meterRegistry.timer(
+            "ml.prediction.latency",
+            "model", modelName,
+            "version", modelVersion
+        ).record(latencyMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+
+        meterRegistry.counter(
+            "ml.prediction.count",
+            "model", modelName,
+            "success", success.toString()
+        ).increment()
+    }
+
+    fun recordPredictionQuality(modelName: String, actualLabel: String, predictedLabel: String) {
+        val correct = actualLabel == predictedLabel
+        meterRegistry.counter(
+            "ml.prediction.quality",
+            "model", modelName,
+            "correct", correct.toString()
+        ).increment()
+    }
+}
+```
+
+---
+
+## 🐳 11. ML Service Docker Setup
+
+```dockerfile
+# ml_service/Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+RUN python -c "import joblib; model = joblib.load('models/recommendation_model.pkl'); print('Model loaded')"
+
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+```
+
+```yaml
+# docker-compose.yml additions
+services:
+  ml-service:
+    build: ./ml_service
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ml_service/models:/app/models:ro
+    environment:
+      - MODEL_VERSION=v1.2.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
+
+---
+
 *Part 76/100+ | Kotlin & Spring Boot Complete Course*
