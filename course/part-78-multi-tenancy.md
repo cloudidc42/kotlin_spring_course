@@ -414,4 +414,128 @@ class TenantManagementService(
 
 ---
 
+## 🧪 9. Testing Multi-tenancy
+
+```kotlin
+@SpringBootTest
+class MultiTenancyTest {
+
+    @Autowired
+    private lateinit var productRepository: ProductRepository
+
+    @Test
+    fun `tenant A cannot see tenant B data`() {
+        // สร้าง products สำหรับ tenant A
+        TenantContext.setCurrentTenant("tenant_a")
+        val productA = productRepository.save(Product(name = "Tenant A Product", price = 100.0))
+
+        // สร้าง products สำหรับ tenant B
+        TenantContext.setCurrentTenant("tenant_b")
+        val productB = productRepository.save(Product(name = "Tenant B Product", price = 200.0))
+
+        // Tenant A ควรเห็นเฉพาะ product ของตัวเอง
+        TenantContext.setCurrentTenant("tenant_a")
+        val tenantAProducts = productRepository.findAll()
+        assertThat(tenantAProducts).hasSize(1)
+        assertThat(tenantAProducts.first().name).isEqualTo("Tenant A Product")
+
+        // Cleanup
+        TenantContext.clear()
+    }
+
+    @Test
+    fun `request without tenant header returns 401`() {
+        // ทดสอบว่า requests ที่ไม่มี tenant header ถูก reject
+        val mockMvc = MockMvcBuilders.webAppContextSetup(applicationContext).build()
+        mockMvc.perform(
+            MockMvcRequestBuilders.get("/api/v1/products")
+                .header("Authorization", "Bearer validtoken")
+                // ไม่มี X-Tenant-Id header
+        ).andExpect(MockMvcResultMatchers.status().isUnauthorized)
+    }
+}
+```
+
+---
+
+## 🔒 10. Tenant Subscription Plans
+
+```kotlin
+@Entity
+@Table(name = "tenants")
+data class Tenant(
+    @Id
+    val id: String,
+    val companyName: String,
+    val adminEmail: String,
+    
+    @Enumerated(EnumType.STRING)
+    val plan: TenantPlan = TenantPlan.STARTER,
+    
+    val schemaName: String,
+    val isActive: Boolean = true,
+    val maxUsers: Int = 10,
+    val maxProducts: Int = 100,
+    val storageGb: Int = 1
+)
+
+enum class TenantPlan(
+    val maxUsers: Int,
+    val maxProducts: Int,
+    val storageGb: Int,
+    val features: Set<String>
+) {
+    STARTER(10, 100, 1, setOf("basic_search")),
+    PROFESSIONAL(50, 10_000, 10, setOf("basic_search", "advanced_analytics", "api_access")),
+    ENTERPRISE(Int.MAX_VALUE, Int.MAX_VALUE, 1000, setOf("basic_search", "advanced_analytics", "api_access", "custom_domain", "sso", "dedicated_support"))
+}
+```
+
+### Plan Enforcement
+
+```kotlin
+@Aspect
+@Component
+class PlanEnforcementAspect(
+    private val tenantRepository: TenantRepository,
+    private val productRepository: ProductRepository
+) {
+
+    @Before("@annotation(requiresPlan)")
+    fun checkPlanFeature(joinPoint: JoinPoint, requiresPlan: RequiresPlan) {
+        val tenantId = TenantContext.getCurrentTenant()
+        val tenant = tenantRepository.findById(tenantId)
+            ?: throw TenantNotFoundException(tenantId)
+
+        if (requiresPlan.feature !in tenant.plan.features) {
+            throw FeatureNotAvailableException(
+                "Feature '${requiresPlan.feature}' requires ${requiresPlan.minimumPlan} plan or higher"
+            )
+        }
+    }
+
+    @Before("execution(* com.example.ProductService.create(..))")
+    fun checkProductLimit() {
+        val tenantId = TenantContext.getCurrentTenant()
+        val tenant = tenantRepository.findById(tenantId) ?: return
+        val currentCount = productRepository.countByTenantId(tenantId)
+
+        if (currentCount >= tenant.maxProducts) {
+            throw PlanLimitExceededException(
+                "Product limit (${tenant.maxProducts}) reached for plan ${tenant.plan}"
+            )
+        }
+    }
+}
+
+@Target(AnnotationTarget.FUNCTION)
+@Retention(AnnotationRetention.RUNTIME)
+annotation class RequiresPlan(
+    val feature: String,
+    val minimumPlan: String = "PROFESSIONAL"
+)
+```
+
+---
+
 *Part 78/100+ | Kotlin & Spring Boot Complete Course*
