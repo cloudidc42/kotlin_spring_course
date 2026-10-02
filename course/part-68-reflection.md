@@ -493,4 +493,33 @@ object ReflectionCache {
 
 ---
 
+## 📝 11. Reflection Use Cases ใน Spring Boot
+
+| Use Case | ตัวอย่าง | ระดับ Performance Impact |
+|---------|---------|--------------------------|
+| Generic mapper | Entity → DTO | กลาง (cache ได้) |
+| Dynamic validation | @Validate annotations | ต่ำ (ถ้า cache) |
+| Plugin loading | Load class by name | ต่ำ (ทำครั้งเดียว) |
+| Serialization | JSON ↔ Object | สูง (ใช้ library) |
+| Dependency injection | Spring IoC | ต่ำ (startup only) |
+| Test frameworks | JUnit reflection | ไม่สำคัญใน tests |
+
+### สรุป Reflection APIs ที่ใช้บ่อย
+
+```kotlin
+// ตัวอย่าง cheat sheet
+val kClass = MyClass::class               // KClass reference
+val instance = kClass.createInstance()    // no-arg constructor
+val prop = kClass.memberProperties.first() // first property
+val func = kClass.memberFunctions.first() // first function
+val annotations = kClass.annotations      // class annotations
+val isData = kClass.isData                // data class check
+val superTypes = kClass.supertypes        // parent classes/interfaces
+val typeParams = kClass.typeParameters    // generic type params
+val visibility = prop.visibility          // PUBLIC, PROTECTED, etc.
+val isNullable = prop.returnType.isMarkedNullable
+```
+
+---
+
 *Part 68/100+ | Kotlin & Spring Boot Complete Course*

@@ -467,4 +467,77 @@ data class LargeOrderAlert(
 
 ---
 
+## 📊 9. Kafka Monitoring
+
+```yaml
+# JMX metrics สำหรับ Kafka Streams
+spring:
+  kafka:
+    streams:
+      properties:
+        metrics.recording.level: INFO
+        built.in.metrics.version: latest
+```
+
+```kotlin
+@Component
+class KafkaMetricsExporter(
+    private val streamsBuilderFactoryBean: StreamsBuilderFactoryBean,
+    private val meterRegistry: MeterRegistry
+) {
+
+    @Scheduled(fixedRate = 15000)
+    fun exportMetrics() {
+        val streams = streamsBuilderFactoryBean.kafkaStreams
+        val metrics = streams.metrics()
+
+        metrics.forEach { (metricName, metric) ->
+            val value = metric.metricValue()
+            if (value is Number) {
+                meterRegistry.gauge(
+                    "kafka.streams.${metricName.name()}",
+                    value.toDouble()
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 🛡️ 10. Error Handling in Streams
+
+```kotlin
+@Configuration
+class StreamsErrorConfig {
+
+    @Bean
+    fun defaultProductionExceptionHandler() = object : ProductionExceptionHandler {
+        override fun handle(
+            record: ProducerRecord<ByteArray, ByteArray>,
+            exception: Exception
+        ): ProductionExceptionHandler.ProductionExceptionHandlerResponse {
+            logger.error("Failed to produce record to ${record.topic()}", exception)
+            // ส่งไป dead letter topic
+            return ProductionExceptionHandler.ProductionExceptionHandlerResponse.CONTINUE
+        }
+    }
+
+    @Bean
+    fun defaultDeserializationExceptionHandler() = object : DeserializationExceptionHandler {
+        override fun handle(
+            context: ProcessorContext,
+            record: ConsumerRecord<ByteArray, ByteArray>,
+            exception: Exception
+        ): DeserializationExceptionHandler.DeserializationHandlerResponse {
+            logger.error("Failed to deserialize record from ${record.topic()}", exception)
+            return DeserializationExceptionHandler.DeserializationHandlerResponse.CONTINUE
+        }
+    }
+}
+```
+
+---
+
 *Part 75/100+ | Kotlin & Spring Boot Complete Course*

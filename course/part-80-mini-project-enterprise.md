@@ -478,4 +478,103 @@ Phase 3 ครอบคลุม:
 
 ---
 
+## 🔐 11. JWT กับ Multi-tenant
+
+```kotlin
+@Service
+class JwtService(
+    @Value("\${app.jwt.secret}") private val jwtSecret: String,
+    @Value("\${app.jwt.expiration:86400}") private val expiration: Long
+) {
+
+    fun generateToken(user: User, tenantId: String): String {
+        return Jwts.builder()
+            .setSubject(user.id.toString())
+            .claim("email", user.email)
+            .claim("role", user.role)
+            .claim("tenantId", tenantId)  // เพิ่ม tenantId ใน token
+            .setIssuedAt(java.util.Date())
+            .setExpiration(java.util.Date(System.currentTimeMillis() + expiration * 1000))
+            .signWith(getSignKey(), SignatureAlgorithm.HS256)
+            .compact()
+    }
+
+    fun extractTenantId(token: String): String {
+        return extractClaim(token) { it.get("tenantId", String::class.java) }
+    }
+
+    private fun getSignKey(): javax.crypto.SecretKey {
+        return io.jsonwebtoken.security.Keys.hmacShaKeyFor(
+            java.util.Base64.getDecoder().decode(jwtSecret)
+        )
+    }
+
+    private fun <T> extractClaim(token: String, resolver: (Claims) -> T): T {
+        val claims = Jwts.parserBuilder()
+            .setSigningKey(getSignKey())
+            .build()
+            .parseClaimsJws(token)
+            .body
+        return resolver(claims)
+    }
+}
+```
+
+---
+
+## 📈 12. Application Configuration
+
+```yaml
+# application-kubernetes.yml
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:postgres-service}:5432/${DB_NAME:saas_db}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 20
+  
+  redis:
+    host: ${REDIS_HOST:redis-service}
+    port: 6379
+    timeout: 2000ms
+  
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka-service:9092}
+    producer:
+      retries: 3
+      acks: all
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://elasticsearch-service:9200}
+
+app:
+  jwt:
+    secret: ${JWT_SECRET}
+    expiration: 86400  # 24 hours
+  
+  multitenancy:
+    enabled: true
+    default-tenant: system
+  
+  cache:
+    ttl: 3600
+    max-size: 10000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,info
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+```
+
+---
+
 *Part 80/100+ | Kotlin & Spring Boot Complete Course*

@@ -495,4 +495,103 @@ data class FAQRequest(
 
 ---
 
+## 📊 8. AI API Cost Tracking
+
+```kotlin
+@Service
+class AIUsageTracker(
+    private val meterRegistry: MeterRegistry,
+    private val usageRepository: AIUsageRepository
+) {
+
+    fun trackUsage(
+        provider: String,
+        model: String,
+        inputTokens: Int,
+        outputTokens: Int,
+        tenantId: String
+    ) {
+        val inputCost = calculateCost(provider, model, "input", inputTokens)
+        val outputCost = calculateCost(provider, model, "output", outputTokens)
+
+        meterRegistry.counter(
+            "ai.tokens.used",
+            "provider", provider,
+            "model", model,
+            "type", "input"
+        ).increment(inputTokens.toDouble())
+
+        meterRegistry.counter(
+            "ai.cost.usd",
+            "provider", provider,
+            "model", model
+        ).increment(inputCost + outputCost)
+
+        usageRepository.save(
+            AIUsage(
+                provider = provider,
+                model = model,
+                inputTokens = inputTokens,
+                outputTokens = outputTokens,
+                costUsd = inputCost + outputCost,
+                tenantId = tenantId,
+                timestamp = java.time.Instant.now()
+            )
+        )
+    }
+
+    private fun calculateCost(provider: String, model: String, type: String, tokens: Int): Double {
+        // ราคาต่อ 1M tokens (ตาม pricing ปัจจุบัน)
+        val pricePerMillion = when ("$provider:$model:$type") {
+            "anthropic:claude-opus-4-5:input" -> 15.0
+            "anthropic:claude-opus-4-5:output" -> 75.0
+            "anthropic:claude-sonnet-4-5:input" -> 3.0
+            "anthropic:claude-sonnet-4-5:output" -> 15.0
+            "openai:gpt-4o:input" -> 5.0
+            "openai:gpt-4o:output" -> 15.0
+            else -> 1.0
+        }
+        return tokens * pricePerMillion / 1_000_000
+    }
+}
+```
+
+---
+
+## 🔄 9. Prompt Template Management
+
+```kotlin
+@Entity
+@Table(name = "prompt_templates")
+data class PromptTemplate(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    val name: String,
+    val version: String,
+    val systemPrompt: String,
+    val userPromptTemplate: String,
+    val isActive: Boolean = true,
+    val variables: List<String> = emptyList()
+)
+
+@Service
+class PromptTemplateService(
+    private val templateRepository: PromptTemplateRepository
+) {
+
+    fun renderTemplate(templateName: String, variables: Map<String, String>): String {
+        val template = templateRepository.findActiveByName(templateName)
+            ?: throw IllegalArgumentException("Template not found: $templateName")
+
+        var rendered = template.userPromptTemplate
+        variables.forEach { (key, value) ->
+            rendered = rendered.replace("{{$key}}", value)
+        }
+        return rendered
+    }
+}
+```
+
+---
+
 *Part 77/100+ | Kotlin & Spring Boot Complete Course*
